@@ -15,7 +15,7 @@ from monty.json import MSONable
 from numpy.typing import ArrayLike, NDArray
 from pymatgen.analysis.chempot_diagram import ChemicalPotentialDiagram
 from pymatgen.analysis.phase_diagram import PhaseDiagram
-from pymatgen.core import Composition
+from pymatgen.core import Composition, Structure
 from pymatgen.electronic_structure.dos import Dos, FermiDos
 from pymatgen.entries.computed_entries import ComputedEntry, ComputedStructureEntry
 from pymatgen.io.vasp import Locpot, Vasprun
@@ -24,7 +24,10 @@ from scipy.optimize import bisect
 from scipy.spatial import ConvexHull
 
 from pymatgen.analysis.defects.core import Defect
-from pymatgen.analysis.defects.corrections import get_freysoldt_correction
+from pymatgen.analysis.defects.corrections.freysoldt import (
+    FreysoldtSummary,
+    get_freysoldt_correction,
+)
 from pymatgen.analysis.defects.finder import DefectSiteFinder
 from pymatgen.analysis.defects.utils import get_zfile
 
@@ -58,6 +61,7 @@ class DefectEntry(MSONable):
             A dictionary that acts as a generic container for storing information
             about how the corrections were calculated.  These should are only used
             for debugging and plotting purposes.
+            PLEASE DO NOT USE THIS FOR REAL DATA.
     """
 
     defect: Defect
@@ -65,23 +69,26 @@ class DefectEntry(MSONable):
     sc_entry: ComputedStructureEntry
     sc_defect_frac_coords: Optional[ArrayLike] = None
     corrections: Optional[Dict[str, float]] = None
-    corrections_summaries: Optional[Dict[str, Dict]] = None
+    correction_metadata: Optional[Dict[str, Dict]] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Post-initialization."""
         self.charge_state = int(self.charge_state)
         self.corrections: dict = {} if self.corrections is None else self.corrections
-        self.corrections_summaries: dict = (
-            {} if self.corrections_summaries is None else self.corrections_summaries
+        self.correction_type: str = "Freysoldt"
+        self.correction_metadata: dict = (
+            {} if self.correction_metadata is None else self.correction_metadata
         )
 
     def get_freysoldt_correction(
         self,
-        defect_locpot: Locpot,
-        bulk_locpot: Locpot,
+        defect_locpot: Locpot | dict,
+        bulk_locpot: Locpot | dict,
         dielectric: float | NDArray,
+        defect_struct: Optional[Structure] = None,
+        bulk_struct: Optional[Structure] = None,
         **kwargs,
-    ):
+    ) -> FreysoldtSummary:
         """Calculate the Freysoldt correction.
 
         Updates the corrections dictionary with the Freysoldt correction
@@ -90,10 +97,18 @@ class DefectEntry(MSONable):
         Args:
             defect_locpot:
                 The Locpot object for the defect supercell.
+                Or a dictionary of the planar averaged locpot
             bulk_locpot:
                 The Locpot object for the bulk supercell.
+                Or a dictionary of the planar averaged locpot
             dielectric:
                 The dielectric tensor or constant for the bulk material.
+            defect_struct:
+                The defect structure. If None, the structure of the defect_locpot
+                will be used.
+            bulk_struct:
+                The bulk structure. If None, the structure of the bulk_locpot
+                will be used.
             kwargs:
                 Additional keyword arguments for the get_correction method.
 
@@ -101,32 +116,47 @@ class DefectEntry(MSONable):
             dict:
                 The plotting data to analyze the planar averaged electrostatic potential
                 in the three periodic lattice directions.
-
-
         """
+        if defect_struct is None:
+            defect_struct = getattr(defect_locpot, "structure", None)
+        if bulk_struct is None:
+            bulk_struct = getattr(bulk_locpot, "structure", None)
+
+        if defect_struct is None or bulk_struct is None:
+            raise ValueError(
+                "defect_struct and/or bulk_struct is missing either provide the structure or provide the complete locpot."
+            )
+
         if self.sc_defect_frac_coords is None:
             finder = DefectSiteFinder()
             defect_fpos = finder.get_defect_fpos(
-                defect_structure=defect_locpot.structure,
-                base_structure=bulk_locpot.structure,
+                defect_structure=defect_struct,
+                base_structure=bulk_struct,
             )
         else:
             defect_fpos = self.sc_defect_frac_coords
 
-        frey_corr, plot_data = get_freysoldt_correction(
+        frey_corr = get_freysoldt_correction(
             q=self.charge_state,
             dielectric=dielectric,
             defect_locpot=defect_locpot,
             bulk_locpot=bulk_locpot,
             defect_frac_coords=defect_fpos,
+            lattice=defect_struct.lattice,
             **kwargs,
         )
-        self.corrections.update(frey_corr)  # type: ignore
-        self.corrections_summaries["freysoldt_corrections"] = plot_data.copy()
-        return plot_data
+        self.corrections.update(
+            {
+                "electrostatic": frey_corr.electrostatic,
+                "potential_alignment": frey_corr.potential_alignment,
+            }
+        )
+        self.correction_metadata.update(frey_corr.metadata.copy())
+        self.correction_type = "Freysoldt"
+        return frey_corr
 
     @property
-    def corrected_energy(self):
+    def corrected_energy(self) -> float:
         """The energy of the defect entry with all corrections applied."""
         return self.sc_entry.energy + sum(self.corrections.values())
 
@@ -190,8 +220,13 @@ class FormationEnergyDiagram(MSONable):
 
         entries = []
         for entry in self.phase_diagram.stable_entries:
-            d_ = entry.as_dict()
-            d_["energy"] = self.phase_diagram.get_form_energy(entry) - entry.correction
+            d_ = dict(
+                energy=self.phase_diagram.get_form_energy(entry),
+                composition=entry.composition,
+                entry_id=entry.entry_id,
+                correction=0.0,
+            )
+            entries.append(ComputedEntry.from_dict(d_))
             entries.append(ComputedEntry.from_dict(d_))
 
         self.chempot_diagram = ChemicalPotentialDiagram(entries)
@@ -747,12 +782,10 @@ def _get_adjusted_pd_entries(phase_diagram, atomic_entries) -> list[ComputedEntr
 
     for entry in phase_diagram.stable_entries:
         d_ = dict(
-            energy=get_interp_en(entry)
-            + phase_diagram.get_form_energy(entry)
-            - entry.correction,
+            energy=get_interp_en(entry) + phase_diagram.get_form_energy(entry),
             composition=entry.composition,
             entry_id=entry.entry_id,
-            correction=entry.correction,
+            correction=0,
         )
         adjusted_entries.append(ComputedEntry.from_dict(d_))
 
@@ -820,7 +853,7 @@ def plot_formation_energy_diagrams(
         envelope_alpha: Alpha for the envelope
         line_alpha: Alpha for the lines (if the are shown)
         band_edge_color: Color for VBM/CBM vertical lines
-        axis: Previous axis to ammend
+        axis: Previous axis to amend
 
     Returns:
         Axis subplot
@@ -837,18 +870,23 @@ def plot_formation_energy_diagrams(
     if not axis:
         _, axis = plt.subplots()
     if not xlim and band_gap:
-        xmin, xmax = np.subtract(-0.2, alignment), np.subtract(band_gap + 0.2, alignment)
-    ymin, ymax = 0., 1.
+        xmin, xmax = np.subtract(-0.2, alignment), np.subtract(
+            band_gap + 0.2, alignment
+        )
+    ymin, ymax = 0.0, 1.0
     legends_txt = []
     artists = []
     fontwidth = 12
     ax_fontsize = 1.3
     lg_fontsize = 10
 
-    colors = colors if colors \
-        else cm.Dark2(np.linspace(0, 1, len(formation_energy_diagrams))) \
-            if len(formation_energy_diagrams) <= 8 \
-                else cm.gist_rainbow(np.linspace(0, 1, len(formation_energy_diagrams)))
+    colors = (
+        colors
+        if colors
+        else cm.Dark2(np.linspace(0, 1, len(formation_energy_diagrams)))
+        if len(formation_energy_diagrams) <= 8
+        else cm.gist_rainbow(np.linspace(0, 1, len(formation_energy_diagrams)))
+    )
 
     for i, single_fed in enumerate(formation_energy_diagrams):
         lines = single_fed._get_lines(chempots=chempots)
@@ -862,7 +900,9 @@ def plot_formation_energy_diagrams(
             for ln in lines:
                 x = np.linspace(xmin, xmax)
                 y = ln[0] * x + ln[1]
-                axis.plot(np.subtract(x, alignment), y, color=colors[i], alpha=line_alpha)
+                axis.plot(
+                    np.subtract(x, alignment), y, color=colors[i], alpha=line_alpha
+                )
 
         # plot connecting envelop lines
         for i, (_x, _y) in enumerate(trans[:-1]):
@@ -939,12 +979,12 @@ def plot_formation_energy_diagrams(
 
     lg = axis.get_legend()
     if lg:
-        h, l = lg.legendHandles, [l._text for l in lg.texts]
+        handle, leg = lg.legendHandles, [txt._text for txt in lg.texts]
     else:
-        h, l = [], []
+        handle, leg = [], []
     axis.legend(
-        handles=artists + h,
-        labels=legends_txt + l,
+        handles=artists + handle,
+        labels=legends_txt + leg,
         fontsize=lg_fontsize * ax_fontsize,
         ncol=3,
         loc="lower center",
