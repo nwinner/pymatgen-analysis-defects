@@ -14,6 +14,7 @@ import scipy
 from numpy.typing import ArrayLike
 from pymatgen.core import Lattice
 from pymatgen.io.vasp.outputs import Locpot
+from pymatgen.io.common import VolumetricData
 from scipy import stats
 
 from pymatgen.analysis.defects.utils import (
@@ -52,8 +53,8 @@ FreysoldtSummary = namedtuple(
 def get_freysoldt_correction(
     q: int,
     dielectric: float,
-    defect_locpot: Locpot, #TODO Change to VolumetricData eventually
-    bulk_locpot: Locpot,
+    defect_locpot: VolumetricData, #TODO Change to VolumetricData eventually
+    bulk_locpot: VolumetricData,
     defect_frac_coords: Optional[ArrayLike] = None,
     lattice: Optional[Lattice] = None,
     energy_cutoff: float = 520,
@@ -109,7 +110,7 @@ def get_freysoldt_correction(
 
     q_model = QModel() if q_model is None else q_model
 
-    if isinstance(defect_locpot, Locpot):
+    if isinstance(defect_locpot, VolumetricData):
         list_axis_grid = [*map(defect_locpot.get_axis_grid, [0, 1, 2])]
         list_defect_plnr_avg_esp = [
             *map(defect_locpot.get_average_along_axis, [0, 1, 2])
@@ -127,7 +128,7 @@ def get_freysoldt_correction(
         ]
 
     # TODO this can be done with regridding later
-    if isinstance(bulk_locpot, Locpot):
+    if isinstance(bulk_locpot, VolumetricData):
         list_bulk_plnr_avg_esp = [*map(bulk_locpot.get_average_along_axis, [0, 1, 2])]
     else:
         list_bulk_plnr_avg_esp = bulk_locpot
@@ -410,8 +411,8 @@ def plot_plnr_avg(plot_data, title=None, saved=False):
 def get_freysoldt2d_correction(
     q: int,
     dielectric: float,
-    defect_locpot: Locpot,
-    bulk_locpot: Locpot,
+    defect_locpot: VolumetricData,
+    bulk_locpot: VolumetricData,
     defect_frac_coords: Optional[ArrayLike] = None,
     energy_cutoff: float = 520,
     slab_buffer=2,
@@ -594,7 +595,11 @@ def get_freysoldt2d_correction(
         q=q, sxdefectalign2d=sxdefectalign2d, encut=energy_cutoff, vref="LOCPOT.ref", vdef="LOCPOT.def",
         )
     es_corr, metadata = parse_output(out)
-    return {"2d_electrostatic": es_corr}, metadata
+    return FreysoldtSummary(
+        electrostatic=es_corr,
+        potential_alignment=0, # TODO
+        metadata=metadata,
+    )
 
 def plot_freysoldt2d(metadata, savefig=False):
     """
