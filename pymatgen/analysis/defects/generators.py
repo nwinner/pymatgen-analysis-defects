@@ -12,8 +12,9 @@ from monty.json import MSONable
 from pymatgen.core import Element, PeriodicSite, Species, Structure
 from pymatgen.io.vasp import Chgcar
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-
-from pymatgen.analysis.defects.core import Defect, Interstitial, Substitution, Vacancy
+from pymatgen.util.coord import in_coord_list_pbc
+from pymatgen.analysis.adsorption import AdsorbateSiteFinder
+from pymatgen.analysis.defects.core import Defect, Interstitial, Substitution, Vacancy, Adsorbate
 from pymatgen.analysis.defects.utils import ChargeInsertionAnalyzer, remove_collisions
 
 __author__ = "Jimmy-Xuan Shen"
@@ -298,6 +299,35 @@ class ChargeInterstitialGenerator(InterstitialGenerator):
         for _, g in avg_chg_groups:
             yield min(g)
 
+
+class AdsorbateGenerator(DefectGenerator):
+
+    def __init__(self, height=2) -> None:
+        self.height = height
+
+    def generate(self, slab, insertions) -> Generator[Adsorbate, None, None]:
+
+        structure = Structure(lattice=slab.lattice, coords=slab.cart_coords, species=slab.species, coords_are_cartesian=True)
+        adf = AdsorbateSiteFinder(slab, height=self.height)
+
+        adsorbates = []
+        for insertion in insertions:
+            for _, coords in adf.find_adsorption_sites(symm_reduce=0.1, near_reduce=0.1).items():
+                defect_site = PeriodicSite(lattice=structure.lattice, coords=coords[0], species=Species(insertion))
+                temp_struc = structure.copy()
+                temp_struc.append(coords=list(coords[0]), species=Species(insertion))
+                sga = SpacegroupAnalyzer(temp_struc)
+                symm_struct = sga.get_symmetrized_structure()
+                equivalent_sites = symm_struct.find_equivalent_sites(defect_site)
+
+                a = Adsorbate(structure=structure, site=defect_site, multiplicity=len(equivalent_sites), oxi_state=None)
+                adsorbates.append(a)
+
+        from pymatgen.analysis.structure_matcher import StructureMatcher
+        sm = StructureMatcher()
+        for i, v1 in enumerate(adsorbates):
+            if not any((sm.fit(v1.defect_structure, v2.defect_structure) for v2 in adsorbates[:i])):
+                yield v1
 
 def _element_str(sp_or_el: Species | Element) -> str:
     """Convert a species or element to a string."""
