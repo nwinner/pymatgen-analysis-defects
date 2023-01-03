@@ -15,7 +15,7 @@ from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.util.coord import in_coord_list_pbc
 from pymatgen.analysis.adsorption import AdsorbateSiteFinder
 from pymatgen.analysis.defects.core import Defect, Interstitial, Substitution, Vacancy, Adsorbate
-from pymatgen.analysis.defects.utils import ChargeInsertionAnalyzer, remove_collisions
+from pymatgen.analysis.defects.utils import ChargeInsertionAnalyzer, remove_collisions, TopographyAnalyzer
 
 __author__ = "Jimmy-Xuan Shen"
 __copyright__ = "Copyright 2022, The Materials Project"
