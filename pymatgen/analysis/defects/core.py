@@ -298,28 +298,6 @@ class Vacancy(Defect):
 class Substitution(Defect):
     """Single-site substitutional defects."""
 
-    def __init__(
-        self,
-        structure: Structure,
-        site: PeriodicSite,
-        multiplicity: int | None = None,
-        oxi_state: float | None = None,
-        **kwargs,
-    ) -> None:
-        """Initialize a substitutional defect object.
-
-        The position of `site` determines the atom to be removed and the species of
-        `site` determines the replacing species.
-
-        Args:
-            structure: The structure of the defect.
-            site: Replace the nearest site with this one.
-            multiplicity: The multiplicity of the defect.
-            oxi_state: The oxidation state of the defect, if not specified,
-            this will be determined automatically.
-        """
-        super().__init__(structure, site, multiplicity, oxi_state, **kwargs)
-
     def get_multiplicity(self) -> int:
         """Returns the multiplicity of a defect site within the structure.
 
@@ -413,7 +391,9 @@ class Interstitial(Defect):
         site: PeriodicSite,
         multiplicity: int = 1,
         oxi_state: float | None = None,
-        **kwargs,
+        symprec: float = 0.01,
+        angle_tolerance: float = 5,
+        user_charges: list[int] | None = None,
     ) -> None:
         """Initialize an interstitial defect object.
 
@@ -426,7 +406,10 @@ class Interstitial(Defect):
             oxi_state: The oxidation state of the defect, if not specified,
                 this will be determined automatically.
         """
-        super().__init__(structure, site, multiplicity, oxi_state, **kwargs)
+        super().__init__(
+            structure, site, multiplicity, oxi_state, symprec=symprec,
+            angle_tolerance=angle_tolerance, user_charges=user_charges
+            )
 
     def get_multiplicity(self) -> int:
         """Determine the multiplicity of the defect site within the structure."""
@@ -495,6 +478,8 @@ class Interstitial(Defect):
         sub_species = get_element(self.site.specie)
         fpos_str = ",".join(f"{x:.2f}" for x in self.site.frac_coords)
         return f"{sub_species} intersitial site at [{fpos_str}]"
+
+        return f"{sub_species} intersitial site"
 
 
 class DefectComplex(Defect):
@@ -661,13 +646,15 @@ class Adsorbate(Interstitial):
     algorithmically as interstitials, but are conceptually separate.
     """
 
-    @property
-    def name(self) -> str:
-        """Returns a name for this defect."""
-        return f"{get_element(self.site.specie)}_{{ads}}"
+#    @property
+#    def name(self) -> str:
+#        """Returns a name for this defect."""
+#
+#        return f"{get_element(self.site.specie)}_{{ads}}"
 
     def __repr__(self) -> str:
         """Representation of a adsorbate defect."""
+        return super().__repr__()
         sub_species = get_element(self.site.specie)
         fpos_str = ",".join(f"{x:.2f}" for x in self.site.frac_coords)
         return f"{sub_species} adsorbate site at [{fpos_str}]"
